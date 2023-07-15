@@ -73,15 +73,30 @@ struct Ray {
     }
 };
 
+struct RGB {
+    unsigned char r, g, b;
+
+    void write(std::FILE* stream) {
+        unsigned char buf[4] = {r, g, b, 0xFF};
+        std::fwrite(buf, sizeof(unsigned char), 4, stream);
+    }
+};
+
+struct Hit {
+    double t;
+    RGB color;
+};
+
 
 class Geometry {
 public:
     // Returns the argument for the parameterization of the ray, not the point
     // in space. If there are multiple intersections, returns the one closest
     // to the origin of the ray.
-    virtual std::optional<double> intersect(Ray) = 0;
+    virtual std::optional<Hit> intersect(Ray) = 0;
 };
 
+const RGB plane_color{0xA0, 0xA0, 0xFF};
 struct Plane : Geometry {
     // the plane is n . [x y z] = k
     // this means that n is the normal to the plane
@@ -90,12 +105,12 @@ struct Plane : Geometry {
 
     Plane(Vec3 n, double k) : n(n), k(k) {};
 
-    std::optional<double> intersect(Ray r) {
+    std::optional<Hit> intersect(Ray r) {
         Vec3 u = r.dir.vec();
         double numer = k - n * r.origin.coords, denom = n * u;
         if (std::abs(denom) < EPSILON) { // ray is parallel to the plane...
             if (std::abs(numer) < EPSILON) { // ...and contained in the plane
-                return 0;
+                return {{0, plane_color}};
             }
             else { // ...but not contained in the plane
                 return {};
@@ -103,7 +118,7 @@ struct Plane : Geometry {
         }
         else { // ray is not parallel to the plane
             double t = numer / denom;
-            if (t >= 0) return t;
+            if (t >= 0) return {{t, plane_color}};
             else return {};
         }
     };
@@ -121,26 +136,14 @@ struct Triangle : Geometry {
 };
 */
 
-std::optional<double> min_nonneg(double a, double b) {
-    if (a <= b) {
-        if (a >= 0) return a;
-        else if (b >= 0) return b;
-        else return {};
-    }
-    else {
-        if (b >= 0) return b;
-        else if (a >= 0) return a;
-        else return {};
-    }
-}
-
+const RGB sphere_color{0xFF, 0xA0, 0xA0};
 struct Sphere : Geometry {
     Point center;
     double radius;
 
     Sphere(Point c, double r) : center(c), radius(r) {};
 
-    std::optional<double> intersect(Ray r) {
+    std::optional<Hit> intersect(Ray r) {
         Vec3 u = r.dir.vec(),
              // The equation we want to solve is the same as the one for a
              // sphere centered at ORIGIN with the ray's origin offset by our
@@ -154,7 +157,10 @@ struct Sphere : Geometry {
         if (discrim < 0) return {};
         double i1 = (-b + sqrt(discrim)) / (2 * a),
                i2 = (-b - sqrt(discrim)) / (2 * a);
-        return min_nonneg(i1, i2);
+        if (i1 <= i2) std::swap(i1, i2);
+        if (i1 >= 0) return {{i1, sphere_color}};
+        else if (i2 >= 0) return {{i2, sphere_color}};
+        else return {};
     };
 };
 
@@ -162,20 +168,35 @@ struct Scene : Geometry {
     // TODO should this be a unique_ptr or something?
     std::vector<Geometry*> geoms;
 
-    std::optional<double> intersect(Ray r) {
-        std::optional<double> t = {};
+    std::optional<Hit> intersect(Ray r) {
+        std::optional<Hit> h = {};
         for (Geometry* g : geoms) {
-            auto this_t = g->intersect(r);
-            if (this_t && (!t || this_t.value() < t.value())) t = this_t;
+            auto this_h = g->intersect(r);
+            if (this_h && (!h || this_h.value().t < h.value().t)) h = this_h;
         }
-        return t;
+        return h;
     }
 };
 
-void draw(Geometry& scene, Ray r0, double res) {
-    for (Ray eye = r0; eye.dir.pol < r0.dir.pol + M_PI; eye.dir.pol += res) {
-        for (eye.dir.az = r0.dir.az + M_PI/2;
-                eye.dir.az > r0.dir.az - M_PI/2; eye.dir.az -= res / 2) {
+void draw_img(Geometry& scene, Ray r0, int w, int h) {
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            Ray eye = r0;
+            eye.dir.az += M_PI / 2 - M_PI * x / w;
+            eye.dir.pol += M_PI * y / h - M_PI / 2;
+            auto h = scene.intersect(eye);
+            RGB pix = h ? h.value().color : RGB{0xFF, 0xFF, 0xFF};
+            pix.write(stdout);
+        }
+    }
+}
+void draw_term(Geometry& scene, Ray r0, double res) {
+    Ray eye = r0;
+    eye.dir.az += M_PI / 2;
+    eye.dir.pol -= M_PI / 2;
+    for (; eye.dir.pol < r0.dir.pol + M_PI / 2; eye.dir.pol += res) {
+        for (eye.dir.az = r0.dir.az + M_PI / 2;
+                eye.dir.az > r0.dir.az - M_PI / 2; eye.dir.az -= res / 2) {
             std::putchar(scene.intersect(eye) ? '#' : ' ');
         }
         std::putchar('\n');
@@ -187,18 +208,27 @@ void clear() {
 
 int main() {
     Plane p{{0, 0, 1}, 0};
-    Sphere s{{0, 1.5, 2}, 1};
+    Sphere s1{{0, 1.5, 2}, 1};
+    Sphere s2{{2, 3, 2.5}, 1};
     Scene sc;
-    sc.geoms = {&p, &s};
+    sc.geoms = {&p, &s1, &s2};
 
-    Ray eye{{0, 0, 1}, {M_PI / 2, 0}};
+    Ray eye{{0, 0, 1}, {M_PI / 2, M_PI / 2}};
+    for (;;) {
+        draw_img(sc, eye, 480, 480);
+        eye.origin.coords.y -= 0.01;
+        eye.origin.coords.z += 0.01;
+        eye.dir.pol += 0.003;
+    }
+    /*
     for (;;) {
         clear();
-        draw(sc, eye, 0.03);
+        draw_term(sc, eye, 0.05);
         eye.origin.coords.y -= 0.01;
         eye.dir.pol += 0.001;
         usleep(100000);
     }
+    */
     /*
     std::optional<double> i = p.intersect(eye);
     if (i) std::printf("%f\n", i.value());
