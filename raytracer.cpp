@@ -118,7 +118,7 @@ public:
 
 const RGB plane_color1{0xA0, 0xA0, 0xFF},
       plane_color2{0xA0, 0xA0, 0xA0};
-bool even(double x) {return !!abs(((int)x) % 2);}
+bool even(double x) {return !!abs((int)ceil(x) % 2);}
 RGB plane_color(Point p) {
     return
         even(p.coords.x) ^ even(p.coords.y) ^ even(p.coords.z) ?
