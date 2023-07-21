@@ -88,20 +88,11 @@ struct SphCoords {
     }
 };
 
-struct SphRay {
-    Point origin;
-    SphCoords dir;
-
-    Point at_time(double t) {
-        return origin + t * dir.vec().v;
-    }
-};
 struct Ray {
     Point origin;
     UVec3 dir;
 
     Ray(Point origin, UVec3 dir) : origin(origin), dir(dir) {};
-    Ray(SphRay r) : origin(r.origin), dir(r.dir.vec()) {};
     Ray(Point a, Point b) : origin(a), dir(UVec3(b - a)) {};
 
     Point at_time(double t) {
@@ -148,7 +139,6 @@ public:
     // in space. If there are multiple intersections, returns the one closest
     // to the origin of the ray.
     virtual std::optional<Hit> intersect(Ray) = 0;
-    std::optional<Hit> intersect(SphRay r) {return intersect(Ray(r));}
 };
 
 const RGB plane_color1{0xA0, 0xA0, 0xFF},
@@ -239,7 +229,7 @@ struct Scene : Geometry {
     }
 };
 
-void draw_pinhole(Geometry& scene, Frame fr,
+void draw(Geometry& scene, Frame fr,
         double iw, double ih, int pw, int ph,
         unsigned char* buf) {
     for (int y = 0; y < ph; y++) {
@@ -254,34 +244,6 @@ void draw_pinhole(Geometry& scene, Frame fr,
         }
     }
 }
-void draw_img(Geometry& scene, SphRay r0, double fov,
-        int w, int h, unsigned char* buf) {
-    for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            SphRay eye = r0;
-            eye.dir.az += fov / 2 - fov * x / w;
-            eye.dir.pol += fov * y / h - fov / 2;
-            auto hit = scene.intersect(eye);
-            RGB pix = hit ? hit.value().color : RGB{0xFF, 0xFF, 0xFF};
-            pix.write(buf);
-        }
-    }
-}
-void draw_term(Geometry& scene, SphRay r0, double fov, double res) {
-    SphRay eye = r0;
-    eye.dir.az += fov / 2;
-    eye.dir.pol -= fov / 2;
-    for (; eye.dir.pol < r0.dir.pol + fov / 2; eye.dir.pol += res) {
-        for (eye.dir.az = r0.dir.az + fov / 2;
-                eye.dir.az > r0.dir.az - fov / 2; eye.dir.az -= res / 2) {
-            std::putchar(scene.intersect(eye) ? '#' : ' ');
-        }
-        std::putchar('\n');
-    }
-}
-void clear() {
-    printf("\033[2J\033[3J\033[H");
-}
 
 int main() {
     // a perfect x=0, y=0, or z=0 plane "z-fights with itself" because of how
@@ -292,42 +254,20 @@ int main() {
     Scene sc;
     sc.geoms = {&p, &s1, &s2};
 
-    SphRay eye{{0, -1, 1}, {M_PI / 2, M_PI / 2}};
+    Point eye_pos{0, -1, 1};
+    SphCoords eye_dir{M_PI / 2, M_PI / 2};
     const int w = 480, h = 480;
     unsigned char* buf = (unsigned char*)
         calloc(w * h * 4, sizeof(unsigned char));
     for (;;) {
-        Frame fr(eye, UVec3(1, 0, 0));
-        draw_pinhole(sc, fr, 1, 1, w, h, buf);
+        Frame fr(eye_pos, eye_dir.vec(), UVec3(1, 0, 0));
+        draw(sc, fr, 1, 1, w, h, buf);
         std::fwrite(buf, sizeof(unsigned char), w * h * 4, stdout);
-        eye.origin.coords.y -= 0.005;
-        eye.origin.coords.z += 0.01;
-        eye.dir.pol += 0.001;
+        eye_pos.coords.y -= 0.005;
+        eye_pos.coords.z += 0.01;
+        eye_dir.pol += 0.001;
     }
     free(buf); // lol
-    /*
-    SphRay eye{{0, 0, 1}, {M_PI / 2, M_PI / 2}};
-    const int w = 480, h = 480;
-    unsigned char* buf = (unsigned char*)
-        calloc(w * h * 4, sizeof(unsigned char));
-    for (;;) {
-        draw_img(sc, eye, M_PI / 2, w, h, buf);
-        std::fwrite(buf, sizeof(unsigned char), w * h * 4, stdout);
-        eye.origin.coords.y -= 0.01;
-        eye.origin.coords.z += 0.01;
-        eye.dir.pol += 0.003;
-    }
-    free(buf); // lol
-    */
-    /*
-    for (;;) {
-        clear();
-        draw_term(sc, eye, M_PI / 2, 0.05);
-        eye.origin.coords.y -= 0.01;
-        eye.dir.pol += 0.001;
-        usleep(100000);
-    }
-    */
     return 0;
 }
 
