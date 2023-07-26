@@ -3,7 +3,7 @@ set -e
 
 dir="$(dirname $(readlink -f ${BASH_SOURCE[0]}))"
 binary="$dir/${1:-a.out}"
-framerate="${2:-60}"
+framerate="${2:-1}"
 
 if [[ ! -x "$binary" ]]; then
     echo "Error: Binary either doesn't exist or isn't executable."
