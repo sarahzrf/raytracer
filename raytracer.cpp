@@ -229,7 +229,7 @@ struct Plane : Geometry {
     UVec3 normal(Point p) {return n;}
 
     double brdf(Point p, UVec3 dir_i, UVec3 dir_o, double freq) {
-        return 0.75/M_PI;
+        return 0.5/M_PI;
     }
 
     RGB color(Point p) {
@@ -281,7 +281,7 @@ struct Sphere : Geometry {
     UVec3 normal(Point p) {return normalize(p - center);}
 
     double brdf(Point p, UVec3 dir_i, UVec3 dir_o, double freq) {
-        return 0.75/M_PI;
+        return 0.5/M_PI;
     }
 
     RGB color(Point p) {
@@ -338,35 +338,33 @@ struct Scene {
         return rot_to(apex) * sample_north_hemi();
     }
 
-    // basically just https://en.wikipedia.org/wiki/Rendering_equation
-    const int SAMPLE_COUNT = 30;
     const double NUDGE = 0.00001;
-    const int MAXDEPTH = 2;
-    double L_o(PointOnScene p, UVec3 dir_o, double freq, int depth) {
-        if (depth >= MAXDEPTH) return 0;
-        UVec3 n = p.g->normal(p.p);
-        // bounce out from here to avoid self-collision
-        Point p_i = p.p + NUDGE * n.v;
-        // no emitting surfaces atm, so just the integral term
-        double sum = 0;
-        for (int i = 0; i < SAMPLE_COUNT; i++) {
-            UVec3 dir_i = sample_hemi(n);
-            sum += p.g->brdf(p.p, dir_i, dir_o, freq) *
-                L_i(p_i, dir_i, freq, depth + 1) * (dir_i * n);
+    const int SAMPLES = 100;
+    const int MAX_BOUNCES = 5;
+    double bounce(Point p, UVec3 dir_i, double freq) {
+        double accum = 1.0;
+        for (int i = 0; i < MAX_BOUNCES && accum > EPSILON; i++) {
+            std::optional<PointOnScene> hit = intersect(Ray(p, dir_i));
+            if (!hit) {
+                accum *= skybox_spectral_radiance(freq);
+                break;
+            }
+            PointOnScene next_p = hit.value();
+            UVec3 dir_o = -dir_i;
+            UVec3 n = next_p.g->normal(next_p.p);
+            // bounce out from here to avoid self-collision
+            p = next_p.p + NUDGE * n.v;
+            // no emitting surfaces atm, so just the integrand
+            dir_i = sample_hemi(n);
+            accum *= 2 * M_PI *
+                next_p.g->brdf(next_p.p, dir_i, dir_o, freq) * (dir_i * n);
         }
-        return 2 * M_PI / (double)SAMPLE_COUNT * sum;
-    }
-    double L_o(PointOnScene p, UVec3 dir_o, double freq) {
-        return L_o(p, dir_o, freq, 0);
-    }
-
-    double L_i(Point p, UVec3 dir_i, double freq, int depth) {
-        std::optional<PointOnScene> hit = intersect(Ray(p, dir_i));
-        if (!hit) return skybox_spectral_radiance(freq);
-        else return L_o(hit.value(), -dir_i, freq, depth);
+        return accum;
     }
     double L_i(Point p, UVec3 dir_i, double freq) {
-        return L_i(p, dir_i, freq, 0);
+        double sum = 0;
+        for (int i = 0; i < SAMPLES; i++) sum += bounce(p, dir_i, freq);
+        return sum / (double)SAMPLES;
     }
 };
 

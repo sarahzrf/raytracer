@@ -16,5 +16,6 @@ size="$((w * h * 4))"
 "$binary" | mpv -\
     --demuxer=rawvideo --demuxer-rawvideo-w="$w"\
     --demuxer-rawvideo-h="$h" --demuxer-rawvideo-format=RGBA\
-    --demuxer-rawvideo-size="$size" --demuxer-rawvideo-fps="$framerate"
+    --demuxer-rawvideo-size="$size" --demuxer-rawvideo-fps="$framerate"\
+    --screenshot-format=png
 
