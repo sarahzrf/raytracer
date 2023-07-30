@@ -168,23 +168,6 @@ struct Frame {
         origin(r.origin), fwd(r.dir), rt(rt), up(UVec3(rt.v ^ r.dir.v)) {}
 };
 
-struct RGB {
-    unsigned char r, g, b;
-
-    void write(unsigned char*& buf) {
-        buf[0] = r;
-        buf[1] = g;
-        buf[2] = b;
-        buf[3] = 0xFF;
-        buf += 4;
-    }
-
-    void fwrite(std::FILE* stream) {
-        unsigned char buf[4] = {r, g, b, 0xFF};
-        std::fwrite(buf, sizeof(unsigned char), 4, stream);
-    }
-};
-
 
 class Geometry {
 public:
@@ -193,16 +176,12 @@ public:
     // to the origin of the ray.
     virtual std::optional<double> intersect(Ray) = 0;
     virtual UVec3 normal(Point) = 0;
-    virtual double brdf(Point, UVec3, UVec3, double) = 0;
-    virtual RGB color(Point) = 0;
+    virtual bool coincident(Point) = 0;
 };
 
-const RGB plane_color1{0xA0, 0xA0, 0xFF},
-      plane_color2{0xA0, 0xA0, 0xA0};
-bool even(double x) {return !!abs((int)ceil(x) % 2);}
 struct Plane : Geometry {
-    // the plane is n . [x y z] = k
-    // this means that n is the normal to the plane
+    // the plane is w . [x y z] = k
+    // this means that normalize(w) is the normal to the plane; we save it in n
     Vec3 w;
     double k;
     UVec3 n;
@@ -228,15 +207,7 @@ struct Plane : Geometry {
 
     UVec3 normal(Point p) {return n;}
 
-    double brdf(Point p, UVec3 dir_i, UVec3 dir_o, double freq) {
-        return 0.5/M_PI;
-    }
-
-    RGB color(Point p) {
-        return
-            even(p.coords.x) ^ even(p.coords.y) ^ even(p.coords.z) ?
-            plane_color1 : plane_color2;
-    }
+    bool coincident(Point p) {return std::abs(w * p.coords - k) < EPSILON;}
 };
 
 /*
@@ -251,7 +222,6 @@ struct Triangle : Geometry {
 };
 */
 
-const RGB sphere_color{0xFF, 0xA0, 0xA0};
 struct Sphere : Geometry {
     Point center;
     double radius;
@@ -272,7 +242,7 @@ struct Sphere : Geometry {
         if (discrim < 0) return {};
         double i1 = (-b + sqrt(discrim)) / (2 * a),
                i2 = (-b - sqrt(discrim)) / (2 * a);
-        if (i1 <= i2) std::swap(i1, i2);
+        if (i1 >= i2) std::swap(i1, i2);
         if (i1 >= 0) return {i1};
         else if (i2 >= 0) return {i2};
         else return {};
@@ -280,50 +250,57 @@ struct Sphere : Geometry {
 
     UVec3 normal(Point p) {return normalize(p - center);}
 
-    double brdf(Point p, UVec3 dir_i, UVec3 dir_o, double freq) {
-        return 0.5/M_PI;
-    }
-
-    RGB color(Point p) {
-        return sphere_color;
+    bool coincident(Point p) {
+        return std::abs((center - p).norm() - radius) < EPSILON;
     }
 };
 
-struct PointOnScene {
-    Point p;
-    Geometry* g;
+
+struct RGB {
+    unsigned char r, g, b;
+
+    void write(unsigned char*& buf) {
+        buf[0] = r;
+        buf[1] = g;
+        buf[2] = b;
+        buf[3] = 0xFF;
+        buf += 4;
+    }
+
+    void fwrite(std::FILE* stream) {
+        unsigned char buf[4] = {r, g, b, 0xFF};
+        std::fwrite(buf, sizeof(unsigned char), 4, stream);
+    }
 };
-struct Scene {
-    // TODO should this be a unique_ptr or something?
-    std::vector<Geometry*> geoms;
+struct BRDFSample {
+    UVec3 dir_i;
+    // pdf value should be scaled by 2π (so for example a uniform distribution
+    // should set pdf to 1); there's a 2π constant in Scene::bounce to
+    // compensate
+    double brdf_val, pdf;
+};
+class Material {
+    public:
+    virtual RGB color(Point) = 0;
+    // virtual double brdf(Point, UVec3, UVec3, double) = 0;
+    virtual BRDFSample sample_brdf(Point, UVec3, UVec3, double) = 0;
+};
+
+class Checkerboard : public Material {
     std::ranlux48_base gen;
     std::uniform_real_distribution<double> z_distr;
     std::uniform_real_distribution<double> az_distr;
 
-    Scene(std::vector<Geometry*> geoms) : geoms(geoms) {
+    public: Checkerboard() {
         std::random_device rd;
         gen = std::ranlux48_base(rd());
         z_distr = std::uniform_real_distribution<double>(0, 1);
         az_distr = std::uniform_real_distribution<double>(0, 2 * M_PI);
     }
 
-    std::optional<PointOnScene> intersect(Ray r) {
-        std::optional<double> t = {};
-        std::optional<Geometry*> g = {};
-        for (Geometry* this_g : geoms) {
-            auto this_t = this_g->intersect(r);
-            if (this_t && (!t || this_t.value() < t.value())) {
-                t = this_t;
-                g = this_g;
-            }
-        }
-        if (!t) return {};
-        else return {{r.at_time(t.value()), g.value()}};
-    }
-
-    // implying i remember what spectral radiance is
-    double skybox_spectral_radiance(double freq) {
-        return 1;
+    static bool even(double x) {return !!abs((int)ceil(x) % 2);}
+    static bool checker(Point p) {
+        return even(p.coords.x) ^ even(p.coords.y) ^ even(p.coords.z);
     }
 
     // from PBR by way of glowcoil
@@ -338,26 +315,88 @@ struct Scene {
         return rot_to(apex) * sample_north_hemi();
     }
 
+    BRDFSample sample_brdf(Point p, UVec3 n, UVec3 dir_o, double freq) {
+        UVec3 dir_i = sample_hemi(n);
+        double val = checker(p) ? 0.5 : 0.75;
+        return {dir_i, val/M_PI, 1};
+    }
+
+    const RGB color1{0xA0, 0xA0, 0xFF},
+          color2{0xA0, 0xA0, 0xA0};
+    RGB color(Point p) {return checker(p) ?  color1 : color2;}
+};
+
+class Mirror : public Material {
+    double albedo;
+
+    public: Mirror(double albedo) : albedo(albedo) {}
+
+    BRDFSample sample_brdf(Point p, UVec3 n, UVec3 dir_o, double freq) {
+        UVec3 dir_i = UVec3(2 * (dir_o * n) * n.v - dir_o.v);
+        return {dir_i, albedo/(dir_i * n), 2 * M_PI};
+    }
+
+    const RGB pink{0xFF, 0xA0, 0xA0};
+    RGB color(Point p) {
+        return pink;
+    }
+};
+
+
+struct Object {
+    // TODO should these be smart pointers or something?
+    Geometry *g;
+    Material *m;
+};
+
+struct PointOnObj {
+    Point p;
+    Object o;
+};
+struct Scene {
+    std::vector<Object> objs;
+
+    Scene(std::vector<Object> objs) : objs(objs) {}
+
+    std::optional<PointOnObj> intersect(Ray r) {
+        std::optional<double> t = {};
+        std::optional<Object> o = {};
+        for (Object this_o : objs) {
+            auto this_t = this_o.g->intersect(r);
+            if (this_t && (!t || this_t.value() < t.value())) {
+                t = this_t;
+                o = this_o;
+            }
+        }
+        if (!t) return {};
+        else return {{r.at_time(t.value()), o.value()}};
+    }
+
+    // implying i remember what spectral radiance is
+    double skybox_spectral_radiance(double freq) {
+        return 1;
+    }
+
     const double NUDGE = 0.00001;
     const int SAMPLES = 100;
     const int MAX_BOUNCES = 5;
     double bounce(Point p, UVec3 dir_i, double freq) {
         double accum = 1.0;
         for (int i = 0; i < MAX_BOUNCES && accum > EPSILON; i++) {
-            std::optional<PointOnScene> hit = intersect(Ray(p, dir_i));
+            std::optional<PointOnObj> hit = intersect(Ray(p, dir_i));
             if (!hit) {
                 accum *= skybox_spectral_radiance(freq);
                 break;
             }
-            PointOnScene next_p = hit.value();
+            PointOnObj next_p = hit.value();
             UVec3 dir_o = -dir_i;
-            UVec3 n = next_p.g->normal(next_p.p);
+            UVec3 n = next_p.o.g->normal(next_p.p);
             // bounce out from here to avoid self-collision
             p = next_p.p + NUDGE * n.v;
             // no emitting surfaces atm, so just the integrand
-            dir_i = sample_hemi(n);
-            accum *= 2 * M_PI *
-                next_p.g->brdf(next_p.p, dir_i, dir_o, freq) * (dir_i * n);
+            auto samp = next_p.o.m->sample_brdf(next_p.p, n, dir_o, freq);
+            dir_i = samp.dir_i;
+            accum *= 2 * M_PI * samp.brdf_val / samp.pdf * (dir_i * n);
         }
         return accum;
     }
@@ -373,6 +412,7 @@ void draw_bounce(Scene& scene, Frame fr,
         unsigned char* buf) {
     for (int y = 0; y < ph; y++) {
         for (int x = 0; x < pw; x++) {
+            // comment-only line for convenient breakpoints
             Vec3 dir = fr.fwd.v +
                 fr.up.v * ih * (0.5 - (double)y/(double)ph) +
                 fr.rt.v * iw * ((double)x/(double)pw - 0.5);
@@ -394,22 +434,30 @@ void draw(Scene& scene, Frame fr,
                 fr.rt.v * iw * ((double)x/(double)pw - 0.5);
             Ray r = Ray{fr.origin, normalize(dir)};
             auto hit = scene.intersect(r);
+            /*
+            if (hit && !hit.value().o.g->coincident(hit.value().p)) {
+                fprintf(stderr, "uh oh!\n");
+            }
+            */
             RGB pix = hit ?
-                hit.value().g->color(hit.value().p) : RGB{0xFF, 0xFF, 0xFF};
+                hit.value().o.m->color(hit.value().p) : RGB{0xFF, 0xFF, 0xFF};
             pix.write(buf);
         }
     }
 }
 
+
 int main() {
     // a perfect x=0, y=0, or z=0 plane "z-fights with itself" because of how
     // the color function is written, hence the 0.001
     Plane p{{0, 0, 1}, 0.001};
+    Checkerboard ck;
     Sphere s1{{0, 1.5, 2}, 1};
     Sphere s2{{2, 3, 2.5}, 1};
-    Scene sc({&p, &s1, &s2});
+    Mirror m(0.9);
+    Scene sc({{&p, &ck}, {&s1, &ck}, {&s2, &m}});
 
-    Point eye_pos{1, -2, 2};
+    Point eye_pos{1, -4, 2};
     SphCoords eye_dir{M_PI / 2, M_PI / 2};
     const int w = 480, h = 480;
     unsigned char* buf = (unsigned char*)
