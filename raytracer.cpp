@@ -288,13 +288,13 @@ class Material {
 
 class Checkerboard : public Material {
     std::ranlux48_base gen;
-    std::uniform_real_distribution<double> z_distr;
+    std::uniform_real_distribution<double> r_distr;
     std::uniform_real_distribution<double> az_distr;
 
     public: Checkerboard() {
         std::random_device rd;
         gen = std::ranlux48_base(rd());
-        z_distr = std::uniform_real_distribution<double>(0, 1);
+        r_distr = std::uniform_real_distribution<double>(0, 1);
         az_distr = std::uniform_real_distribution<double>(0, 2 * M_PI);
     }
 
@@ -303,12 +303,12 @@ class Checkerboard : public Material {
         return even(p.coords.x) ^ even(p.coords.y) ^ even(p.coords.z);
     }
 
-    // from PBR by way of glowcoil
+    // from PBR
     UVec3 sample_north_hemi() {
-        double z = z_distr(gen), az = az_distr(gen);
-        return UVec3(sqrt(1 - z * z) * cos(az),
-            sqrt(1 - z * z) * sin(az),
-            z);
+        double r = r_distr(gen), az = az_distr(gen);
+        return UVec3(r * cos(az),
+            r * sin(az),
+            sqrt(1 - r * r));
     }
 
     UVec3 sample_hemi(UVec3 apex) {
@@ -318,7 +318,7 @@ class Checkerboard : public Material {
     BRDFSample sample_brdf(Point p, UVec3 n, UVec3 dir_o, double freq) {
         UVec3 dir_i = sample_hemi(n);
         double val = checker(p) ? 0.5 : 0.75;
-        return {dir_i, val/M_PI, 1};
+        return {dir_i, val/M_PI, 2 * (dir_i * n)};
     }
 
     const RGB color1{0xA0, 0xA0, 0xFF},
@@ -339,6 +339,17 @@ class Mirror : public Material {
     const RGB pink{0xFF, 0xA0, 0xA0};
     RGB color(Point p) {
         return pink;
+    }
+};
+
+class Vantablack : public Material {
+    BRDFSample sample_brdf(Point p, UVec3 n, UVec3 dir_o, double freq) {
+        return {dir_o, 0, 2 * M_PI};
+    }
+
+    const RGB black{0x00, 0x00, 0x00};
+    RGB color(Point p) {
+        return black;
     }
 };
 
@@ -450,11 +461,11 @@ void draw(Scene& scene, Frame fr,
 int main() {
     // a perfect x=0, y=0, or z=0 plane "z-fights with itself" because of how
     // the color function is written, hence the 0.001
-    Plane p{{0, 0, 1}, 0.001};
     Checkerboard ck;
+    Mirror m(0.9);
+    Plane p{{0, 0, 1}, 0.001};
     Sphere s1{{0, 1.5, 2}, 1};
     Sphere s2{{2, 3, 2.5}, 1};
-    Mirror m(0.9);
     Scene sc({{&p, &ck}, {&s1, &ck}, {&s2, &m}});
 
     Point eye_pos{1, -4, 2};
