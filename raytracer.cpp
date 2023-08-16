@@ -284,6 +284,7 @@ class Material {
     virtual RGB color(Point) = 0;
     // virtual double brdf(Point, UVec3, UVec3, double) = 0;
     virtual BRDFSample sample_brdf(Point, UVec3, UVec3, double) = 0;
+    virtual double L_e(Point, UVec3, double) = 0;
 };
 
 class Checkerboard : public Material {
@@ -303,9 +304,13 @@ class Checkerboard : public Material {
         return even(p.coords.x) ^ even(p.coords.y) ^ even(p.coords.z);
     }
 
+    const RGB color1{0xA0, 0xA0, 0xFF},
+          color2{0xA0, 0xA0, 0xA0};
+    RGB color(Point p) {return checker(p) ?  color1 : color2;}
+
     // from PBR
     UVec3 sample_north_hemi() {
-        double r = r_distr(gen), az = az_distr(gen);
+        double r = sqrt(r_distr(gen)), az = az_distr(gen);
         return UVec3(r * cos(az),
             r * sin(az),
             sqrt(1 - r * r));
@@ -321,9 +326,9 @@ class Checkerboard : public Material {
         return {dir_i, val/M_PI, 2 * (dir_i * n)};
     }
 
-    const RGB color1{0xA0, 0xA0, 0xFF},
-          color2{0xA0, 0xA0, 0xA0};
-    RGB color(Point p) {return checker(p) ?  color1 : color2;}
+    double L_e(Point p, UVec3 dir_o, double freq) {
+        return 0;
+    }
 };
 
 class Mirror : public Material {
@@ -331,14 +336,18 @@ class Mirror : public Material {
 
     public: Mirror(double albedo) : albedo(albedo) {}
 
+    const RGB pink{0xFF, 0xA0, 0xA0};
+    RGB color(Point p) {
+        return pink;
+    }
+
     BRDFSample sample_brdf(Point p, UVec3 n, UVec3 dir_o, double freq) {
         UVec3 dir_i = UVec3(2 * (dir_o * n) * n.v - dir_o.v);
         return {dir_i, albedo/(dir_i * n), 2 * M_PI};
     }
 
-    const RGB pink{0xFF, 0xA0, 0xA0};
-    RGB color(Point p) {
-        return pink;
+    double L_e(Point p, UVec3 dir_o, double freq) {
+        return 0;
     }
 };
 
@@ -350,6 +359,23 @@ class Vantablack : public Material {
     const RGB black{0x00, 0x00, 0x00};
     RGB color(Point p) {
         return black;
+    }
+
+    double L_e(Point p, UVec3 dir_o, double freq) {
+        return 0;
+    }
+};
+
+class Lamp : public Material {
+    const RGB white{0xFF, 0xFF, 0xFF};
+    RGB color(Point p) {return white;}
+
+    BRDFSample sample_brdf(Point p, UVec3 n, UVec3 dir_o, double freq) {
+        return {dir_o, 0, 2 * M_PI};
+    }
+
+    double L_e(Point p, UVec3 dir_o, double freq) {
+        return 1;
     }
 };
 
@@ -392,24 +418,25 @@ struct Scene {
     const int SAMPLES = 100;
     const int MAX_BOUNCES = 5;
     double bounce(Point p, UVec3 dir_i, double freq) {
-        double accum = 1.0;
-        for (int i = 0; i < MAX_BOUNCES && accum > EPSILON; i++) {
+        double total = 0.0, frac = 1.0;
+        for (int i = 0; i < MAX_BOUNCES && frac > EPSILON; i++) {
             std::optional<PointOnObj> hit = intersect(Ray(p, dir_i));
             if (!hit) {
-                accum *= skybox_spectral_radiance(freq);
+                total += frac * skybox_spectral_radiance(freq);
                 break;
             }
             PointOnObj next_p = hit.value();
             UVec3 dir_o = -dir_i;
             UVec3 n = next_p.o.g->normal(next_p.p);
+            if (dir_o * n < 0) n = -n;
+            auto samp = next_p.o.m->sample_brdf(next_p.p, n, dir_o, freq);
+            total += frac * next_p.o.m->L_e(next_p.p, dir_o, freq);
             // bounce out from here to avoid self-collision
             p = next_p.p + NUDGE * n.v;
-            // no emitting surfaces atm, so just the integrand
-            auto samp = next_p.o.m->sample_brdf(next_p.p, n, dir_o, freq);
             dir_i = samp.dir_i;
-            accum *= 2 * M_PI * samp.brdf_val / samp.pdf * (dir_i * n);
+            frac *= 2 * M_PI * samp.brdf_val / samp.pdf * (dir_i * n);
         }
-        return accum;
+        return total;
     }
     double L_i(Point p, UVec3 dir_i, double freq) {
         double sum = 0;
@@ -467,6 +494,20 @@ int main() {
     Sphere s1{{0, 1.5, 2}, 1};
     Sphere s2{{2, 3, 2.5}, 1};
     Scene sc({{&p, &ck}, {&s1, &ck}, {&s2, &m}});
+    /*
+    Checkerboard ck;
+    Lamp l;
+    Plane p{{0, 0, 1}, 0.001};
+    Sphere s1{{0, 5, 5}, 3.5};
+    Sphere s2{{1, 4, 1}, 0.3};
+    Scene sc({{&p, &ck}, {&s1, &ck}, {&s2, &l}});
+    Checkerboard ck;
+    Lamp l;
+    Plane p1{{0, 0, 1}, 0.001};
+    Plane p2{{0, 0, 1}, 5};
+    Sphere s{{1, 4, 1}, 1};
+    Scene sc({{&p1, &ck}, {&p2, &ck}, {&s, &l}});
+    */
 
     Point eye_pos{1, -4, 2};
     SphCoords eye_dir{M_PI / 2, M_PI / 2};
